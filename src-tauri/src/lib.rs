@@ -1,11 +1,9 @@
-use tauri::{AppHandle, Emitter};
+use futures_lite::stream::StreamExt;
+use iroh::net::discovery::local_swarm_discovery::NAME as SWARM_DISCOVERY_NAME;
+use tauri::Emitter;
 
 #[tauri::command]
-async fn discover(
-    app: AppHandle,
-    state: tauri::State<'_, iroh::node::MemNode>,
-) -> Result<Vec<String>, ()> {
-    use iroh::net::discovery::local_swarm_discovery::NAME as SWARM_DISCOVERY_NAME;
+async fn discover(state: tauri::State<'_, iroh::node::MemNode>) -> Result<Vec<String>, ()> {
     use iroh::net::endpoint::Source;
 
     let limit = std::time::Duration::from_secs(60);
@@ -16,8 +14,6 @@ async fn discover(
             if let Source::Discovery { name } = source {
                 if name == SWARM_DISCOVERY_NAME && last_seen <= limit {
                     eps.push(remote.node_id.to_string());
-                    app.emit("test-event", remote.node_id.to_string())
-                        .map_err(|_| ())?;
                 }
             }
         }
@@ -35,17 +31,41 @@ pub async fn run() {
         .await
         .expect("failed to start iroh");
 
+    let endpoint = iroh_node.endpoint().clone();
+
+    println!("starting iroh");
     tauri::Builder::default()
         .setup(|app| {
-            tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::App("index.html".into()),
-            )
-            .inner_size(800., 600.)
-            .title("iroh-drop")
-            .disable_drag_drop_handler()
-            .build()?;
+            #[cfg(not(mobile))]
+            {
+                tauri::WebviewWindowBuilder::new(
+                    app,
+                    "main",
+                    tauri::WebviewUrl::App("index.html".into()),
+                )
+                .inner_size(800., 600.)
+                .title("iroh-drop")
+                .disable_drag_drop_handler()
+                .build()?;
+            }
+            #[cfg(mobile)]
+            {
+                tauri::WebviewWindowBuilder::from_config(
+                    app,
+                    &app.config().app.windows.get(0).unwrap().clone(),
+                )?
+                .build()?;
+            }
+
+            let handle = app.handle().clone();
+            tokio::task::spawn(async move {
+                let mut stream = endpoint.discovery().unwrap().subscribe().unwrap();
+                while let Some(item) = stream.next().await {
+                    if item.provenance == SWARM_DISCOVERY_NAME {
+                        handle.emit("discovery", item.node_id.to_string()).ok();
+                    }
+                }
+            });
 
             Ok(())
         })

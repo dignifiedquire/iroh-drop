@@ -1,8 +1,10 @@
+use std::collections::HashSet;
+
 use leptos::html::Div;
 use leptos::leptos_dom::ev::SubmitEvent;
 use leptos::*;
 use leptos_use::{use_drop_zone_with_options, UseDropZoneOptions, UseDropZoneReturn};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -16,22 +18,17 @@ extern "C" {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct ListenArgs {
+pub struct Event<T> {
     pub event: String,
-    pub target: EventTarget,
-    pub handler: f64,
+    pub payload: T,
+    pub id: f64,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct EventTarget {
-    kind: String,
-    label: Option<String>,
-}
-
-async fn listen<F: Fn(JsValue) + 'static>(event: &str, handler: F) -> impl FnOnce() {
+async fn listen<T: DeserializeOwned, F: Fn(T) + 'static>(event: &str, handler: F) -> impl FnOnce() {
     logging::log!("listenting to event: {}", event);
     let closure = Closure::<dyn FnMut(_)>::new(move |s: JsValue| {
-        handler(s);
+        let event: Event<T> = serde_wasm_bindgen::from_value(s).unwrap();
+        handler(event.payload);
     });
 
     let unlisten = listen_sys(event, closure.as_ref().unchecked_ref()).await;
@@ -45,19 +42,26 @@ async fn listen<F: Fn(JsValue) + 'static>(event: &str, handler: F) -> impl FnOnc
 
 #[component]
 pub fn App() -> impl IntoView {
-    let (discover_msg, set_discover_msg) = create_signal(Vec::new());
+    let (discover_msg, set_discover_msg) = create_signal(HashSet::new());
 
     let discover = move |ev: SubmitEvent| {
         ev.prevent_default();
         spawn_local(async move {
             let result = invoke_without_args("discover").await;
             let discover: Vec<String> = serde_wasm_bindgen::from_value(result).unwrap();
-            set_discover_msg.set(discover);
+            set_discover_msg.update(|val| {
+                for el in discover {
+                    val.insert(el);
+                }
+            });
         });
     };
     spawn_local(async move {
-        let unlisten = listen("test-event", |s| {
-            logging::log!("recv event: {:?}", s);
+        let unlisten = listen::<String, _>("discovery", move |node_id| {
+            logging::log!("recv event: {:?}", node_id);
+            set_discover_msg.update(|val| {
+                val.insert(node_id);
+            });
         })
         .await;
 
