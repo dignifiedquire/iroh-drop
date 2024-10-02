@@ -1,6 +1,8 @@
 use futures_lite::stream::StreamExt;
 use iroh::net::discovery::local_swarm_discovery::NAME as SWARM_DISCOVERY_NAME;
+use log::info;
 use tauri::Emitter;
+use tauri_plugin_log::{Target, TargetKind};
 
 #[tauri::command]
 async fn discover(state: tauri::State<'_, iroh::node::MemNode>) -> Result<Vec<String>, ()> {
@@ -24,18 +26,23 @@ async fn discover(state: tauri::State<'_, iroh::node::MemNode>) -> Result<Vec<St
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub async fn run() {
-    let iroh_node = iroh::node::Node::memory()
-        .node_discovery(iroh::node::DiscoveryConfig::Default)
-        .spawn()
-        .await
-        .expect("failed to start iroh");
+pub fn run() {
+    let iroh_node = tauri::async_runtime::block_on(async move {
+        info!("starting iroh");
+        iroh::node::Node::memory()
+            .node_discovery(iroh::node::DiscoveryConfig::Default)
+            .spawn()
+            .await
+            .expect("failed to start iroh")
+    });
 
+    info!("inner run");
     let endpoint = iroh_node.endpoint().clone();
 
-    println!("starting iroh");
     tauri::Builder::default()
         .setup(|app| {
+            info!("setup");
+
             #[cfg(not(mobile))]
             {
                 tauri::WebviewWindowBuilder::new(
@@ -59,7 +66,8 @@ pub async fn run() {
             }
 
             let handle = app.handle().clone();
-            tokio::task::spawn(async move {
+            tauri::async_runtime::spawn(async move {
+                info!("spawning discovery stream");
                 let mut stream = endpoint.discovery().unwrap().subscribe().unwrap();
                 while let Some(item) = stream.next().await {
                     if item.provenance == SWARM_DISCOVERY_NAME {
@@ -71,6 +79,15 @@ pub async fn run() {
             Ok(())
         })
         .plugin(tauri_plugin_shell::init())
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir { file_name: None }),
+                    Target::new(TargetKind::Webview),
+                ])
+                .build(),
+        )
         .manage(iroh_node)
         .invoke_handler(tauri::generate_handler![discover])
         .run(tauri::generate_context!())
