@@ -13,16 +13,7 @@
     "withGlobalTauri": true,
     "security": {
       "csp": null
-    },
-    "windows": [
-      {
-        "fullscreen": false,
-        "height": 600,
-        "resizable": true,
-        "title": "Iroh Drop",
-        "width": 800
-      }
-    ]
+    }
   },
   "bundle": {
     "active": true,

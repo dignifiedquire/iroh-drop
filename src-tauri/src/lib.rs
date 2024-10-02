@@ -50,10 +50,11 @@ pub async fn run() {
             }
             #[cfg(mobile)]
             {
-                tauri::WebviewWindowBuilder::from_config(
+                tauri::WebviewWindowBuilder::new(
                     app,
-                    &app.config().app.windows.get(0).unwrap().clone(),
-                )?
+                    "main",
+                    tauri::WebviewUrl::App("index.html".into()),
+                )
                 .build()?;
             }
 
