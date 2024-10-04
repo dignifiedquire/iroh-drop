@@ -15,6 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.0.0-rc", features = [] }
 
 [dependencies]
+anyhow = "1"
 tauri = { version = "2.0.0-rc", features = [] }
 tauri-plugin-shell = "2.0.0-rc"
 serde = { version = "1", features = ["derive"] }
@@ -23,3 +24,10 @@ iroh = { version = "0.26.0", features = ["discovery-local-network"] }
 futures-lite = "2.3.0"
 tauri-plugin-log = "2.0.0"
 log = "0.4.22"
+tokio-util = { version = "0.7.12", features = ["codec", "io"] }
+tokio-serde = "0.9.0"
+tokio = "1.40.0"
+static_assertions = "1.1.0"
+bytes = "1.7.2"
+postcard = "1.0.10"
+futures-util = { version = "0.3.30", features = ["sink"] }
