@@ -1,7 +1,10 @@
-# Tauri + Leptos
+# iroh-drop
 
-This template should help get you started developing with Tauri and Leptos.
 
-## Recommended IDE Setup
+## Running
 
-[VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+### Desktop
+
+```sh
+> cargo +nightly tauri dev
+```

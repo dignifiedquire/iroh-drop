@@ -156,17 +156,17 @@ fn node_view(name: String, node_id: String) -> impl IntoView {
             .on_enter(move |_| set_dropped.set(false)),
     );
 
+    let class = move || {
+        let mut base = "row dropzone".to_string();
+        if is_over_drop_zone.get() {
+            base += " dropping";
+        }
+        base
+    };
     view! {
-        <div node_ref=drop_zone_el class="dropzone">
+        <div node_ref=drop_zone_el class={ class }>
           <p>
-           {name}: {node_id}
-          </p>
-          <p>"Drop files here"</p>
-          <p>"Is over drop zone:" {move || is_over_drop_zone.get()}</p>
-          <p>"Dropped:" {move || dropped.get()}</p>
-          <p>
-            "Dropped Files:"
-            { move || files.get().iter().map(|f| format!("{}: {}bytes", f.name(), f.size())).collect::<Vec<_>>()}
+           {name}
           </p>
         </div>
     }
