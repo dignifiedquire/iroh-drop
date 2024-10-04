@@ -5,6 +5,7 @@ use iroh::net::{discovery::local_swarm_discovery::NAME as SWARM_DISCOVERY_NAME, 
 use log::info;
 use tauri::Emitter;
 use tauri_plugin_log::{Target, TargetKind};
+use tokio::sync::mpsc;
 
 mod protocol;
 
@@ -49,7 +50,7 @@ async fn discover(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let (iroh_node, proto) = tauri::async_runtime::block_on(async move {
+    let (iroh_node, proto, mut r) = tauri::async_runtime::block_on(async move {
         info!("starting iroh");
         let builder = iroh::node::Node::memory()
             .node_discovery(iroh::node::DiscoveryConfig::Default)
@@ -57,17 +58,19 @@ pub fn run() {
             .await
             .expect("failed to build iroh");
 
+        let (s, r) = mpsc::channel(64);
         let proto = protocol::Protocol::new(
             "drop-1".to_string(),
             builder.client().clone(),
             builder.endpoint().clone(),
+            s,
         );
         let node = builder
             .accept(protocol::ALPN.to_vec(), proto.clone())
             .spawn()
             .await
             .expect("failed to spawn iroh");
-        (node, proto)
+        (node, proto, r)
     });
 
     info!("inner run");
@@ -105,18 +108,33 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 info!("spawning discovery stream");
                 let mut stream = endpoint.discovery().unwrap().subscribe().unwrap();
-                while let Some(item) = stream.next().await {
-                    if item.provenance == SWARM_DISCOVERY_NAME {
-                        if !proto.is_known_node(&item.node_id).await {
-                            match proto.send_intro(item.node_id).await {
-                                Ok(name) => {
-                                    let name = format!("{} ({})", name, item.node_id);
-                                    handle.emit("discovery", (name, item.node_id.to_string())).ok();
-                                }
-                                Err(err) => {
-                                    eprintln!("failed to discover: {:?}", err);
+
+                loop {
+                    tokio::select! {
+                        Some(item) = stream.next() => {
+                            if item.provenance == SWARM_DISCOVERY_NAME {
+                                if !proto.is_known_node(&item.node_id).await {
+                                    match proto.send_intro(item.node_id).await {
+                                        Ok(name) => {
+                                            let name = format!("{} ({})", name, item.node_id);
+                                            handle.emit("discovery", (name, item.node_id.to_string())).ok();
+                                        }
+                                        Err(err) => {
+                                            eprintln!("failed to discover: {:?}", err);
+                                        }
+                                    }
                                 }
                             }
+                        }
+                        Some(msg) = r.recv() => {
+                            match msg {
+                                protocol::LocalProtocolMessage::FileDownloaded { name, hash, size } => {
+                                    handle.emit("file-downloaded", (name, hash.to_string(), size)).ok();
+                                }
+                            }
+                        },
+                        else => {
+                            break;
                         }
                     }
                 }

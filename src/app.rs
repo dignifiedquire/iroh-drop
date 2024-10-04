@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 
 use js_sys::Uint8Array;
+use leptoaster::*;
 use leptos::html::Div;
 use leptos::leptos_dom::ev::SubmitEvent;
 use leptos::*;
-use leptos_use::{use_drop_zone_with_options, UseDropZoneEvent, UseDropZoneOptions, UseDropZoneReturn};
+use leptos_use::{
+    use_drop_zone_with_options, UseDropZoneEvent, UseDropZoneOptions, UseDropZoneReturn,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -46,6 +49,8 @@ async fn listen<T: DeserializeOwned, F: Fn(T) + 'static>(event: &str, handler: F
 pub fn App() -> impl IntoView {
     let (discover_msg, set_discover_msg) = create_signal(HashMap::new());
 
+    provide_toaster();
+
     let discover = move |ev: SubmitEvent| {
         ev.prevent_default();
         spawn_local(async move {
@@ -70,7 +75,26 @@ pub fn App() -> impl IntoView {
         on_cleanup(unlisten);
     });
 
+    let toaster = expect_toaster();
+    spawn_local(async move {
+        let unlisten =
+            listen::<(String, String, u64), _>("file-downloaded", move |(name, hash, size)| {
+                logging::log!("recv event file-downloaed: {} - {} - {}", name, hash, size);
+                toaster.toast(
+                    ToastBuilder::new(&format!("File received: {} ({}bytes)", name, size))
+                        .with_level(ToastLevel::Success)
+                        .with_expiry(None)
+                        .with_position(ToastPosition::TopRight),
+                );
+            })
+            .await;
+
+        on_cleanup(unlisten);
+    });
+
     view! {
+        <Toaster stacked={true} />
+
         <main class="container">
             <p>"Discover local iroh nodes."</p>
 
@@ -104,7 +128,9 @@ fn node_view(name: String, node_id: String) -> impl IntoView {
         spawn_local(async move {
             let file = &event.files[0];
             logging::log!("reading: {:?}", file);
-            let buffer = JsFuture::from(file.array_buffer()).await.expect("failed future");
+            let buffer = JsFuture::from(file.array_buffer())
+                .await
+                .expect("failed future");
             let array = Uint8Array::new(&buffer);
             let file_data: Vec<u8> = array.to_vec();
             logging::log!("converting args");
@@ -112,7 +138,8 @@ fn node_view(name: String, node_id: String) -> impl IntoView {
                 node_id,
                 file_name: file.name(),
                 file_data,
-            }).expect("failed conversion");
+            })
+            .expect("failed conversion");
             logging::log!("args {:?}", args);
             let result = invoke("send_file", args).await;
             logging::log!("sent file {:?}", result);

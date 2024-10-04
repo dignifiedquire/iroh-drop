@@ -4,6 +4,7 @@ use std::{io, marker::PhantomData, pin::Pin};
 use anyhow::Result;
 use bytes::{BufMut as _, Bytes, BytesMut};
 use futures_lite::stream::{Stream, StreamExt};
+use futures_util::sink::SinkExt;
 use iroh::{
     blobs::Hash,
     net::{
@@ -12,9 +13,9 @@ use iroh::{
     },
     node::ProtocolHandler,
 };
-use futures_util::sink::SinkExt;
 use serde::{Deserialize, Serialize};
 use tauri::async_runtime::RwLock;
+use tokio::sync::mpsc;
 use tokio_serde::{Deserializer, Serializer};
 
 pub const ALPN: &[u8] = b"iroh-drop/0";
@@ -25,6 +26,7 @@ pub struct Protocol {
     known_nodes: RwLock<BTreeMap<NodeId, RemoteNode>>,
     client: iroh::client::Iroh,
     endpoint: iroh::net::Endpoint,
+    s: mpsc::Sender<LocalProtocolMessage>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,37 +56,69 @@ impl ProtocolHandler for Protocol {
             tauri::async_runtime::spawn(async move {
                 while let Some(message) = reader.next().await {
                     match message {
-                        Ok(message) => match message {
-                            ProtocolMessage::IntroRequest { name } => {
-                                this.known_nodes.write().await.insert(node_id, RemoteNode {
-                                    name,
-                                });
+                        Ok(message) => {
+                            match message {
+                                ProtocolMessage::IntroRequest { name } => {
+                                    this.known_nodes
+                                        .write()
+                                        .await
+                                        .insert(node_id, RemoteNode { name });
 
-                                if let Err(err) = writer.send(ProtocolMessage::IntroResponse { name: self.name.clone() }).await {
-                                    eprintln!("failed to send: {:?}", err);
-                                }
-                            }
-                            ProtocolMessage::IntroResponse { name } => {
-                                this.known_nodes.write().await.insert(node_id, RemoteNode {
-                                    name,
-                                });
-                            }
-                            ProtocolMessage::SendRequest { name, hash, size } => {
-                                if let Some(info) = self.known_nodes.read().await.get(&node_id) {
-                                    // TODO: ask for accepting
-                                    println!("incoming request for {name}: {hash}: {size}bytes from {}", info.name);
-                                    // TODO: spawn?
-                                    if let Err(err) = self.client.blobs().download(hash, node_id.into()).await {
-                                        eprintln!("failed to download {:?}", err);
+                                    if let Err(err) = writer
+                                        .send(ProtocolMessage::IntroResponse {
+                                            name: self.name.clone(),
+                                        })
+                                        .await
+                                    {
+                                        eprintln!("failed to send: {:?}", err);
                                     }
-                                } else {
-                                    println!("ignoring request for unknown node");
+                                }
+                                ProtocolMessage::IntroResponse { name } => {
+                                    this.known_nodes
+                                        .write()
+                                        .await
+                                        .insert(node_id, RemoteNode { name });
+                                }
+                                ProtocolMessage::SendRequest { name, hash, size } => {
+                                    if let Some(info) = self.known_nodes.read().await.get(&node_id)
+                                    {
+                                        // TODO: ask for accepting
+                                        println!("incoming request for {name}: {hash}: {size}bytes from {}", info.name);
+                                        // TODO: spawn?
+                                        match self
+                                            .client
+                                            .blobs()
+                                            .download(hash, node_id.into())
+                                            .await
+                                        {
+                                            Ok(res) => match res.await {
+                                                Ok(res) => {
+                                                    println!("{:?}", res);
+                                                    this.s.send(
+                                                        LocalProtocolMessage::FileDownloaded {
+                                                            name,
+                                                            hash,
+                                                            size,
+                                                        },
+                                                    ).await.ok();
+                                                }
+                                                Err(err) => {
+                                                    eprintln!("failed to download {:?}", err);
+                                                }
+                                            },
+                                            Err(err) => {
+                                                eprintln!("failed to download {:?}", err);
+                                            }
+                                        }
+                                    } else {
+                                        println!("ignoring request for unknown node");
+                                    }
+                                }
+                                ProtocolMessage::Finish => {
+                                    break;
                                 }
                             }
-                            ProtocolMessage::Finish => {
-                                break;
-                            }
-                        },
+                        }
                         Err(err) => {
                             eprintln!("error: {:?}", err);
                         }
@@ -105,13 +139,23 @@ impl ProtocolHandler for Protocol {
     }
 }
 
+pub enum LocalProtocolMessage {
+    FileDownloaded { name: String, hash: Hash, size: u64 },
+}
+
 impl Protocol {
-    pub fn new(name: String, client: iroh::client::Iroh, endpoint: iroh::net::Endpoint ) -> Arc<Self> {
+    pub fn new(
+        name: String,
+        client: iroh::client::Iroh,
+        endpoint: iroh::net::Endpoint,
+        s: mpsc::Sender<LocalProtocolMessage>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             name,
             client,
             endpoint,
             known_nodes: Default::default(),
+            s,
         })
     }
 
@@ -125,37 +169,44 @@ impl Protocol {
 
         let (mut reader, mut writer) = wrap_streams(send, recv);
 
-        writer.send(ProtocolMessage::IntroRequest {
-            name: self.name.clone(),
-        }).await?;
+        writer
+            .send(ProtocolMessage::IntroRequest {
+                name: self.name.clone(),
+            })
+            .await?;
 
         let name = match reader.next().await {
-            Some(Ok(ProtocolMessage::IntroResponse { name })) => {
-                name
-            }
+            Some(Ok(ProtocolMessage::IntroResponse { name })) => name,
             Some(Ok(msg)) => {
                 anyhow::bail!("unexpected response: {:?}", msg);
             }
-            Some(Err(err)) => {
-                return Err(err.into())
-            }
+            Some(Err(err)) => return Err(err.into()),
             None => anyhow::bail!("remote aborted"),
         };
 
-        self.known_nodes.write().await.insert(node_id, RemoteNode {
-            name: name.clone(),
-        });
+        self.known_nodes
+            .write()
+            .await
+            .insert(node_id, RemoteNode { name: name.clone() });
 
         writer.send(ProtocolMessage::Finish).await?;
-        let mut writer =writer.into_inner().into_inner();
+        let mut writer = writer.into_inner().into_inner();
         writer.finish()?;
         writer.stopped().await?;
 
         Ok(name)
     }
 
-    pub async fn send_file(&self, node_id: NodeId, file_name: String, file_data: Vec<u8>) -> Result<()> {
-        anyhow::ensure!(self.known_nodes.read().await.get(&node_id).is_some(), "unknown node");
+    pub async fn send_file(
+        &self,
+        node_id: NodeId,
+        file_name: String,
+        file_data: Vec<u8>,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.known_nodes.read().await.get(&node_id).is_some(),
+            "unknown node"
+        );
 
         let add_res = self.client.blobs().add_bytes(file_data).await?;
 
@@ -164,14 +215,16 @@ impl Protocol {
 
         let (_reader, mut writer) = wrap_streams(send, recv);
 
-        writer.send(ProtocolMessage::SendRequest {
-            name: file_name,
-            hash: add_res.hash,
-            size: add_res.size,
-        }).await?;
+        writer
+            .send(ProtocolMessage::SendRequest {
+                name: file_name,
+                hash: add_res.hash,
+                size: add_res.size,
+            })
+            .await?;
 
         writer.send(ProtocolMessage::Finish).await?;
-        let mut writer =writer.into_inner().into_inner();
+        let mut writer = writer.into_inner().into_inner();
         writer.finish()?;
         writer.stopped().await?;
 
