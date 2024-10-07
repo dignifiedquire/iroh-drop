@@ -49,13 +49,22 @@ async fn listen<T: DeserializeOwned, F: Fn(T) + 'static>(event: &str, handler: F
 pub fn App() -> impl IntoView {
     let (discover_msg, set_discover_msg) = create_signal(HashMap::new());
 
+    let (my_node_id, set_my_node_id) = create_signal(String::new());
+
     provide_toaster();
+
+    spawn_local(async move {
+        let result = invoke_without_args("node_id").await;
+        let my_node_id: String = serde_wasm_bindgen::from_value(result).unwrap();
+        set_my_node_id.set(my_node_id);
+    });
 
     let discover = move |ev: SubmitEvent| {
         ev.prevent_default();
         spawn_local(async move {
             let result = invoke_without_args("discover").await;
             let discover: Vec<(String, String)> = serde_wasm_bindgen::from_value(result).unwrap();
+            logging::log!("discovered: {:?}", discover);
             set_discover_msg.update(|val| {
                 for (name, node_id) in discover {
                     val.insert(name, node_id);
@@ -65,7 +74,7 @@ pub fn App() -> impl IntoView {
     };
     spawn_local(async move {
         let unlisten = listen::<(String, String), _>("discovery", move |(name, node_id)| {
-            logging::log!("recv event: {:?}", node_id);
+            logging::log!("recv event: {}: {}", name, node_id);
             set_discover_msg.update(|val| {
                 val.insert(name, node_id);
             });
@@ -97,6 +106,7 @@ pub fn App() -> impl IntoView {
 
         <main class="container">
             <p>"Discover local iroh nodes."</p>
+            <p>"My Node: " { move || my_node_id.get() }</p>
 
             <form class="row" on:submit=discover>
                 <button type="submit">"Discover"</button>
@@ -163,10 +173,12 @@ fn node_view(name: String, node_id: String) -> impl IntoView {
         }
         base
     };
+    logging::log!("showing {}: {}", name, node_id);
+
     view! {
         <div node_ref=drop_zone_el class={ class }>
           <p>
-           {name}
+            {format!("{} ({})", name, node_id)}
           </p>
         </div>
     }

@@ -9,6 +9,12 @@ use tokio::sync::mpsc;
 
 mod protocol;
 
+#[tauri::command]
+async fn node_id(iroh: tauri::State<'_, iroh::node::MemNode>) -> Result<String, ()> {
+    let id = iroh.node_id().to_string();
+    Ok(id)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 async fn send_file(
     proto: tauri::State<'_, Arc<protocol::Protocol>>,
@@ -17,7 +23,10 @@ async fn send_file(
     file_data: Vec<u8>,
 ) -> Result<(), ()> {
     let node_id: NodeId = node_id.parse().map_err(|_| ())?;
-    proto.send_file(node_id, file_name, file_data).await.map_err(|_| ())?;
+    proto
+        .send_file(node_id, file_name, file_data)
+        .await
+        .map_err(|_| ())?;
 
     Ok(())
 }
@@ -36,8 +45,12 @@ async fn discover(
         for (source, last_seen) in remote.sources() {
             if let Source::Discovery { name } = source {
                 if name == SWARM_DISCOVERY_NAME && last_seen <= limit {
-                    let name = proto.send_intro(remote.node_id).await.map_err(|_| ())?;
-                    eps.push((name, remote.node_id.to_string()));
+                    match proto.send_intro(remote.node_id).await {
+                        Ok(name) => eps.push((name, remote.node_id.to_string())),
+                        Err(err) => {
+                            log::warn!("failed to intro: {:?}", err);
+                        }
+                    }
                 }
             }
         }
@@ -108,7 +121,6 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 info!("spawning discovery stream");
                 let mut stream = endpoint.discovery().unwrap().subscribe().unwrap();
-
                 loop {
                     tokio::select! {
                         Some(item) = stream.next() => {
@@ -116,11 +128,11 @@ pub fn run() {
                                 if !proto.is_known_node(&item.node_id).await {
                                     match proto.send_intro(item.node_id).await {
                                         Ok(name) => {
-                                            let name = format!("{} ({})", name, item.node_id);
                                             handle.emit("discovery", (name, item.node_id.to_string())).ok();
                                         }
                                         Err(err) => {
                                             eprintln!("failed to discover: {:?}", err);
+                                            proto.mark_protocol_missmatch(&item.node_id).await;
                                         }
                                     }
                                 }
@@ -154,7 +166,7 @@ pub fn run() {
         )
         .manage(iroh_node)
         .manage(protocol)
-        .invoke_handler(tauri::generate_handler![discover, send_file])
+        .invoke_handler(tauri::generate_handler![discover, send_file, node_id])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -5,6 +5,7 @@ use anyhow::Result;
 use bytes::{BufMut as _, Bytes, BytesMut};
 use futures_lite::stream::{Stream, StreamExt};
 use futures_util::sink::SinkExt;
+use iroh::gossip::proto;
 use iroh::{
     blobs::Hash,
     net::{
@@ -33,6 +34,7 @@ pub struct Protocol {
 struct RemoteNode {
     /// Name of the remote node
     name: String,
+    protocol_supported: bool,
 }
 
 impl ProtocolHandler for Protocol {
@@ -59,10 +61,13 @@ impl ProtocolHandler for Protocol {
                         Ok(message) => {
                             match message {
                                 ProtocolMessage::IntroRequest { name } => {
-                                    this.known_nodes
-                                        .write()
-                                        .await
-                                        .insert(node_id, RemoteNode { name });
+                                    this.known_nodes.write().await.insert(
+                                        node_id,
+                                        RemoteNode {
+                                            name,
+                                            protocol_supported: true,
+                                        },
+                                    );
 
                                     if let Err(err) = writer
                                         .send(ProtocolMessage::IntroResponse {
@@ -74,10 +79,13 @@ impl ProtocolHandler for Protocol {
                                     }
                                 }
                                 ProtocolMessage::IntroResponse { name } => {
-                                    this.known_nodes
-                                        .write()
-                                        .await
-                                        .insert(node_id, RemoteNode { name });
+                                    this.known_nodes.write().await.insert(
+                                        node_id,
+                                        RemoteNode {
+                                            name,
+                                            protocol_supported: true,
+                                        },
+                                    );
                                 }
                                 ProtocolMessage::SendRequest { name, hash, size } => {
                                     if let Some(info) = self.known_nodes.read().await.get(&node_id)
@@ -91,21 +99,23 @@ impl ProtocolHandler for Protocol {
                                             .download(hash, node_id.into())
                                             .await
                                         {
-                                            Ok(res) => match res.await {
-                                                Ok(res) => {
-                                                    println!("{:?}", res);
-                                                    this.s.send(
+                                            Ok(res) => {
+                                                match res.await {
+                                                    Ok(res) => {
+                                                        println!("{:?}", res);
+                                                        this.s.send(
                                                         LocalProtocolMessage::FileDownloaded {
                                                             name,
                                                             hash,
                                                             size,
                                                         },
                                                     ).await.ok();
+                                                    }
+                                                    Err(err) => {
+                                                        eprintln!("failed to download {:?}", err);
+                                                    }
                                                 }
-                                                Err(err) => {
-                                                    eprintln!("failed to download {:?}", err);
-                                                }
-                                            },
+                                            }
                                             Err(err) => {
                                                 eprintln!("failed to download {:?}", err);
                                             }
@@ -160,7 +170,19 @@ impl Protocol {
     }
 
     pub async fn is_known_node(&self, node_id: &NodeId) -> bool {
-        self.known_nodes.read().await.contains_key(node_id)
+        self.known_nodes
+            .read()
+            .await
+            .contains_key(node_id)
+    }
+
+    pub async fn mark_protocol_missmatch(&self, node_id: &NodeId) {
+        let mut known_nodes = self.known_nodes.write().await;
+        let entry = known_nodes.entry(*node_id).or_insert_with(|| RemoteNode {
+            name: String::new(),
+            protocol_supported: false,
+        });
+        entry.protocol_supported = false;
     }
 
     pub async fn send_intro(&self, node_id: NodeId) -> Result<String> {
@@ -183,11 +205,13 @@ impl Protocol {
             Some(Err(err)) => return Err(err.into()),
             None => anyhow::bail!("remote aborted"),
         };
-
-        self.known_nodes
-            .write()
-            .await
-            .insert(node_id, RemoteNode { name: name.clone() });
+        self.known_nodes.write().await.insert(
+            node_id,
+            RemoteNode {
+                name: name.clone(),
+                protocol_supported: true,
+            },
+        );
 
         writer.send(ProtocolMessage::Finish).await?;
         let mut writer = writer.into_inner().into_inner();
