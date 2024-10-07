@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use futures_lite::stream::StreamExt;
-use iroh::net::{discovery::local_swarm_discovery::NAME as SWARM_DISCOVERY_NAME, NodeId};
+use iroh::net::{discovery::local_swarm_discovery::NAME as SWARM_DISCOVERY_NAME, NodeAddr, NodeId};
 use log::info;
 use tauri::Emitter;
 use tauri_plugin_log::{Target, TargetKind};
@@ -45,7 +45,13 @@ async fn discover(
         for (source, last_seen) in remote.sources() {
             if let Source::Discovery { name } = source {
                 if name == SWARM_DISCOVERY_NAME && last_seen <= limit {
-                    match proto.send_intro(remote.node_id).await {
+                    let addrs = remote.addrs.iter().map(|i| i.addr).collect();
+                    let node_addr = NodeAddr::from_parts(
+                        remote.node_id,
+                        remote.relay_url.clone().map(Into::into),
+                        addrs,
+                    );
+                    match proto.send_intro(node_addr).await {
                         Ok(name) => eps.push((name, remote.node_id.to_string())),
                         Err(err) => {
                             log::warn!("failed to intro: {:?}", err);
@@ -125,8 +131,13 @@ pub fn run() {
                     tokio::select! {
                         Some(item) = stream.next() => {
                             if item.provenance == SWARM_DISCOVERY_NAME {
-                                if !proto.is_known_node(&item.node_id).await {
-                                    match proto.send_intro(item.node_id).await {
+                                let mut node_addr = NodeAddr::new(item.node_id);
+                                node_addr.info = item.addr_info;
+                                let proto = proto.clone();
+                                let handle = handle.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    // if !proto.is_known_node(&item.node_id).await {
+                                    match proto.send_intro(node_addr).await {
                                         Ok(name) => {
                                             handle.emit("discovery", (name, item.node_id.to_string())).ok();
                                         }
@@ -135,7 +146,8 @@ pub fn run() {
                                             proto.mark_protocol_missmatch(&item.node_id).await;
                                         }
                                     }
-                                }
+                                    // }
+                                });
                             }
                         }
                         Some(msg) = r.recv() => {

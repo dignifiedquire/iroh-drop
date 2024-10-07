@@ -5,11 +5,11 @@ use anyhow::Result;
 use bytes::{BufMut as _, Bytes, BytesMut};
 use futures_lite::stream::{Stream, StreamExt};
 use futures_util::sink::SinkExt;
-use iroh::gossip::proto;
+use iroh::net::NodeAddr;
 use iroh::{
     blobs::Hash,
     net::{
-        endpoint::{get_remote_node_id, RecvStream, SendStream},
+        endpoint::{get_remote_node_id, RecvStream},
         NodeId,
     },
     node::ProtocolHandler,
@@ -170,10 +170,7 @@ impl Protocol {
     }
 
     pub async fn is_known_node(&self, node_id: &NodeId) -> bool {
-        self.known_nodes
-            .read()
-            .await
-            .contains_key(node_id)
+        self.known_nodes.read().await.contains_key(node_id)
     }
 
     pub async fn mark_protocol_missmatch(&self, node_id: &NodeId) {
@@ -185,8 +182,8 @@ impl Protocol {
         entry.protocol_supported = false;
     }
 
-    pub async fn send_intro(&self, node_id: NodeId) -> Result<String> {
-        let conn = self.endpoint.connect_by_node_id(node_id, ALPN).await?;
+    pub async fn send_intro(&self, node_addr: NodeAddr) -> Result<String> {
+        let conn = self.endpoint.connect(node_addr.clone(), ALPN).await?;
         let (send, recv) = conn.open_bi().await?;
 
         let (mut reader, mut writer) = wrap_streams(send, recv);
@@ -206,7 +203,7 @@ impl Protocol {
             None => anyhow::bail!("remote aborted"),
         };
         self.known_nodes.write().await.insert(
-            node_id,
+            node_addr.node_id,
             RemoteNode {
                 name: name.clone(),
                 protocol_supported: true,
