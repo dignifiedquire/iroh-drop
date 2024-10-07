@@ -169,6 +169,21 @@ impl Protocol {
         })
     }
 
+    pub async fn known_nodes(&self) -> Vec<(NodeId, String)> {
+        self.known_nodes
+            .read()
+            .await
+            .iter()
+            .filter_map(|(id, info)| {
+                if info.protocol_supported {
+                    Some((*id, info.name.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     pub async fn is_known_node(&self, node_id: &NodeId) -> bool {
         self.known_nodes.read().await.contains_key(node_id)
     }

@@ -67,7 +67,7 @@ pub fn App() -> impl IntoView {
             logging::log!("discovered: {:?}", discover);
             set_discover_msg.update(|val| {
                 for (name, node_id) in discover {
-                    val.insert(name, node_id);
+                    val.insert(node_id, name);
                 }
             });
         });
@@ -76,7 +76,7 @@ pub fn App() -> impl IntoView {
         let unlisten = listen::<(String, String), _>("discovery", move |(name, node_id)| {
             logging::log!("recv event: {}: {}", name, node_id);
             set_discover_msg.update(|val| {
-                val.insert(name, node_id);
+                val.insert(node_id, name);
             });
         })
         .await;
@@ -112,7 +112,7 @@ pub fn App() -> impl IntoView {
                 <button type="submit">"Discover"</button>
             </form>
 
-        <p><b>{ move || discover_msg.get().into_iter().map(|(name, node_id)| {
+        <p><b>{ move || discover_msg.get().into_iter().map(|(node_id, name)| {
             node_view(name, node_id)
             }).collect_view() }</b></p>
         </main>
@@ -143,14 +143,13 @@ fn node_view(name: String, node_id: String) -> impl IntoView {
                 .expect("failed future");
             let array = Uint8Array::new(&buffer);
             let file_data: Vec<u8> = array.to_vec();
-            logging::log!("converting args");
+            logging::log!("sending file to {}", node_id);
             let args = serde_wasm_bindgen::to_value(&SendFileArgs {
                 node_id,
                 file_name: file.name(),
                 file_data,
             })
-            .expect("failed conversion");
-            logging::log!("args {:?}", args);
+                .expect("failed conversion");
             let result = invoke("send_file", args).await;
             logging::log!("sent file {:?}", result);
         })

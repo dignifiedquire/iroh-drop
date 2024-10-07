@@ -21,12 +21,12 @@ async fn send_file(
     node_id: String,
     file_name: String,
     file_data: Vec<u8>,
-) -> Result<(), ()> {
-    let node_id: NodeId = node_id.parse().map_err(|_| ())?;
+) -> Result<(), String> {
+    let node_id: NodeId = node_id.parse::<NodeId>().map_err(|e| e.to_string())?;
     proto
         .send_file(node_id, file_name, file_data)
         .await
-        .map_err(|_| ())?;
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -39,28 +39,36 @@ async fn discover(
     use iroh::net::endpoint::Source;
 
     let limit = std::time::Duration::from_secs(60);
-    let mut eps = Vec::new();
 
-    for remote in iroh.endpoint().remote_info_iter() {
-        for (source, last_seen) in remote.sources() {
-            if let Source::Discovery { name } = source {
-                if name == SWARM_DISCOVERY_NAME && last_seen <= limit {
-                    let addrs = remote.addrs.iter().map(|i| i.addr).collect();
-                    let node_addr = NodeAddr::from_parts(
-                        remote.node_id,
-                        remote.relay_url.clone().map(Into::into),
-                        addrs,
-                    );
-                    match proto.send_intro(node_addr).await {
-                        Ok(name) => eps.push((name, remote.node_id.to_string())),
-                        Err(err) => {
-                            log::warn!("failed to intro: {:?}", err);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // for remote in iroh.endpoint().remote_info_iter() {
+    //     for (source, last_seen) in remote.sources() {
+    //         if let Source::Discovery { name } = source {
+    //             if name == SWARM_DISCOVERY_NAME && last_seen <= limit {
+    //                 let addrs = remote.addrs.iter().map(|i| i.addr).collect();
+    //                 let node_addr = NodeAddr::from_parts(
+    //                     remote.node_id,
+    //                     remote.relay_url.clone().map(Into::into),
+    //                     addrs,
+    //                 );
+    //                 match proto.send_intro(node_addr).await {
+    //                     Ok(name) => {
+    //                         log::info!("discovered {}", remote.node_id);
+    //                     }
+    //                     Err(err) => {
+    //                         log::warn!("failed to intro: {:?}", err);
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+
+    let eps: Vec<_> = proto
+        .known_nodes()
+        .await
+        .into_iter()
+        .map(|(id, name)| (name, id.to_string()))
+        .collect();
 
     println!("found {} nodes", eps.len());
 
@@ -174,6 +182,7 @@ pub fn run() {
                     Target::new(TargetKind::LogDir { file_name: None }),
                     Target::new(TargetKind::Webview),
                 ])
+                .level(log::LevelFilter::Info)
                 .build(),
         )
         .manage(iroh_node)
